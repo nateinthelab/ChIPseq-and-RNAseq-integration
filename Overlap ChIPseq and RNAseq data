@@ -1,0 +1,93 @@
+#!/bin/bash
+
+# -------------------------
+# INPUT FILES (edit as needed)
+# -------------------------
+CHIP_BED="chipseq_peaks.bed"
+CHIP_BAM="chipseq.bam"
+GTF_FILE="annotation.gtf"
+RNASEQ_COUNTS="rnaseq_featurecounts.txt"
+
+# -------------------------
+# CHECK DEPENDENCIES
+# -------------------------
+command -v bedtools >/dev/null 2>&1 || { echo >&2 "bedtools is required"; exit 1; }
+command -v Rscript >/dev/null 2>&1 || { echo >&2 "Rscript is required"; exit 1; }
+
+# -------------------------
+# STEP 1: Convert GTF to BED
+# -------------------------
+echo "[*] Converting GTF to gene BED..."
+awk '$3 == "gene" {
+    match($0, /gene_id "[^"]+"/)
+    gene_id = substr($0, RSTART+9, RLENGTH-10)
+    print $1 "\t" $4-1 "\t" $5 "\t" gene_id
+}' $GTF_FILE > genes.bed
+
+# -------------------------
+# STEP 2: Count ChIP peaks per gene
+# -------------------------
+echo "[*] Counting ChIP-seq peaks overlapping genes..."
+bedtools intersect -a genes.bed -b $CHIP_BED -c > gene_peak_counts.bed
+
+# -------------------------
+# STEP 3: Count ChIP-seq reads per gene
+# -------------------------
+echo "[*] Counting ChIP-seq reads per gene..."
+bedtools multicov -bams $CHIP_BAM -bed genes.bed > gene_chip_reads.bed
+
+# -------------------------
+# STEP 4: Merge + Plot in R
+# -------------------------
+echo "[*] Merging and plotting in R..."
+Rscript - <<EOF
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(readr)
+  library(ggplot2)
+})
+
+# Load data
+peaks <- read_tsv("gene_peak_counts.bed", col_names = c("chr", "start", "end", "gene_id", "peak_count"))
+reads <- read_tsv("gene_chip_reads.bed", col_names = c("chr", "start", "end", "gene_id", "chip_reads"))
+rnaseq <- read_tsv("$RNASEQ_COUNTS", comment = "#")
+
+# Use final column of featureCounts as RNA-seq counts
+rnaseq <- rnaseq %>%
+  rename(gene_id = 1) %>%
+  select(gene_id, rnaseq_counts = last_col())
+
+# Merge all
+merged <- peaks %>%
+  select(gene_id, peak_count) %>%
+  inner_join(reads %>% select(gene_id, chip_reads), by = "gene_id") %>%
+  inner_join(rnaseq, by = "gene_id")
+
+# Save merged table
+write_tsv(merged, "final_chipseq_rnaseq_table.tsv")
+cat("[✓] Data table saved: final_chipseq_rnaseq_table.tsv\n")
+
+# Log2 transform
+merged <- merged %>%
+  mutate(log_chip = log2(chip_reads + 1),
+         log_rna  = log2(rnaseq_counts + 1))
+
+# Pearson correlation
+cor_test <- cor.test(merged$log_chip, merged$log_rna, method = "pearson")
+
+# Plot
+p <- ggplot(merged, aes(x = log_chip, y = log_rna)) +
+  geom_point(alpha = 0.6, color = "steelblue") +
+  geom_smooth(method = "lm", se = TRUE, color = "firebrick", linetype = "dashed") +
+  labs(
+    title = "Correlation: ChIP-seq vs. RNA-seq (log2)",
+    x = "log2(ChIP-seq reads + 1)",
+    y = "log2(RNA-seq counts + 1)",
+    caption = paste("Pearson r =", round(cor_test$estimate, 3),
+                    "| p =", signif(cor_test$p.value, 3))
+  ) +
+  theme_minimal(base_size = 14)
+
+ggsave("chipseq_rnaseq_correlation_plot.png", p, width = 7, height = 5)
+cat("[✓] Plot saved: chipseq_rnaseq_correlation_plot.png\n")
+EOF
