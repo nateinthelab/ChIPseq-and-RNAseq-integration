@@ -1,0 +1,74 @@
+############################################################################################################################
+#plot shared genes between RNAseq and ChIPseq and show their correlation# 
+library(ggplot2)
+library(data.table)
+library(dplyr)
+library(tidyverse)
+library(scico)
+
+setwd("/home/nate/my_data/nate_manuscript/ChIPseq/chip_polii_vps15_fed_fast_liver_may2023/normalized_analysis")
+# load files
+# have respective chip and rnaseq files in the following format for example (ChIP on left, RNAseq on right: 
+# geneID   peak_score                geneID   vst_norm_counts
+#  Gapdh     45                       Gapdh         50
+#  Actin     31                       Actin         60
+
+rna <- read_csv("ChIPseq_RNaseq_integration/vst_norm_counts_fastwt_mean.csv")
+chipPol2 <- read_csv("ChIPseq_RNaseq_integration/polii_fastwtfastko_gainedenrich_in_wt_anno.csv")
+chipVps15 <- read_csv("ChIPseq_RNaseq_integration/vps15_merged_fastwt_peaks_anno.csv")
+
+# merge rna and chip by geneID
+merged_pol2 <- inner_join(rna, chipPol2, by = "geneID")
+merged_vps15 <- inner_join(rna, chipVps15, by = "geneID")
+
+# log2 transform values (adding 1 avoids performing log(0))
+merged_pol2 <- merged_pol2 %>%
+  mutate(log_rna = log2(vst_norm_counts +1), 
+         log_chip = log(pol2S5P_peak_score + 1))
+
+merged_vps15 <- merged_vps15 %>%
+  mutate(log_rna = log2(vst_norm_counts +1), 
+         log_chip = log(vps15_peak_score + 1))
+
+## correlation analysis
+correlation <- cor.test(merged_pol2$log_rna, merged_pol2$log_chip, method = "pearson")
+print(correlation)
+
+correlation <- cor.test(merged_vps15$log_rna, merged_vps15$log_chip, method = "pearson")
+print(correlation)
+
+#density plot for pol2
+ggplot(merged_pol2, aes(x = log_rna, y = pol2S5P_peak_score))+
+  stat_density2d(aes(fill = ..level..), geom = "polygon", color = "white", alpha = 0.6)+
+  scale_fill_scico(palette = "oslo")+
+  labs(
+    title = "2D densityplot of Fastwt RNAseq vs. upreginfastwt_vs_fastko ChIPseq Pol2S5P",
+    x = "log2(RNAseq vst norm counts +1)",
+    y =  "Pol2S5P Fastwt peak score")+
+  theme_classic()+
+  theme(plot.title = element_text(size = 7))
+
+#density plot for vps15
+ggplot(merged_vps15, aes(x = log_rna, y = vps15_peak_score))+
+  stat_density2d(aes(fill = ..level..), geom = "polygon", color = "white", alpha = 0.6)+
+  scale_fill_scico(palette = "oslo")+
+  labs(
+    title = "2D densityplot of Fastwt RNAseq vs. fastwt ChIPseq Vps15",
+    x = "log2(RNAseq vst norm counts +1)",
+    y =  "Vps15 Fastwt peak score")+
+  scale_x_continuous(breaks = seq(1.5,4.5, by = 0.5), limits = c(1.5,4.5))+
+  scale_y_continuous(breaks = seq(20,70, by = 10), limits = c(20,70))+
+  theme_classic()+
+  theme(plot.title = element_text(size = 7))
+
+#hexbin plot
+library(hexbin)
+
+ggplot(merged, aes(x = log_rna, y = h3k4me3_peak_score))+
+  geom_hex(bins = 50)+
+  scale_fill_viridis_c()+
+  labs(
+    title = "2D densityplot of RNAseq vs. ChIPseq",
+    x = "log2(RNAseq counts +1")
+y =  "log2(ChIPseq counts +1)"+
+  theme_minimal()
